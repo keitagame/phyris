@@ -134,8 +134,8 @@
 <div class="wrap">
   <div class="side">
     <div class="panel">
-      <div class="title">PHYSICS TETRIS</div>
-      <div class="subtitle">見た目は物理演算 / 判定はロジック演算</div>
+      <div class="title">PHYRIS</div>
+      
       <div class="stat-row"><span>SCORE</span><span id="scoreVal">0</span></div>
       <div class="stat-row"><span>LINES</span><span id="linesVal">0</span></div>
       <div class="stat-row"><span>LEVEL</span><span id="levelVal">1</span></div>
@@ -521,84 +521,33 @@ function scheduleLineCheck(delayMs = 60) {
 }
 
 // ---------------------------------------------------------------------
-// 定期グリッドスナップ:
-// 物理演算に完全に任せていると、時間経過とともにブロックが少しずつ
-// 傾いたり隙間ができたりして「テトリスの盤面」としての整合性が崩れていく。
-// そこで一定間隔ごとに、各固定ブロックの「今いるセル」を再計算し、
-// そのセルの中心座標・角度0へ少しずつ(瞬間移動ではなく補間で)引き戻す。
-// 物理的なガタつき・傾きの"らしさ"は残しつつ、崩壊が蓄積しないようにする。
+// 裏グリッドの再構築(歪みは矯正せず、歪んだ状態をそのまま裏で再計算する):
+// ブロックがどれだけ傾いたりズレたりしても、その見た目(物理挙動)には
+// 一切手を加えない。代わりに一定間隔ごとに、各固定ブロックの「今の実座標」
+// から属するセルを再計算し、裏側の衝突判定用グリッド(logic.grid)を
+// ゼロから作り直す。つまり「本物のテトリスの盤面」を、歪んだ物理世界の
+// 現在のスナップショットとして毎回再定義する。
+// これにより、新しいピースの出現可否や衝突判定も、歪んだ後の
+// "今ここに本当にブロックがあるか"を正としてジャッジされるようになる。
 // ---------------------------------------------------------------------
-const SNAP_INTERVAL = 220;      // ms: どのくらいの頻度でスナップ補正をかけるか
-const SNAP_LERP = 0.18;         // 1回の補正でどれだけ目標へ近づけるか(0-1)
-const SNAP_ANGLE_LERP = 0.25;   // 角度も同様に少しずつ水平へ戻す
+const GRID_RECOMPUTE_INTERVAL = 200; // ms: 裏グリッドを再計算する頻度
 
-function lerp(a, b, t) { return a + (b - a) * t; }
+// 各固定ボディの実座標から、今どのセル(col,row)に属しているかを求め、
+// 裏側の logic.grid をその場で丸ごと作り直す。
+// 同じセルを複数ボディが取り合っている場合は、単純に「先に見つかった方」
+// を採用する(歪みそのものは矯正しないので、重なりも歪みの一部として扱う)。
+function recomputeLogicGridFromPhysics() {
+  const newGrid = Array.from({ length: ROWS }, () => Array(COLS).fill(null));
 
-// 角度を最短経路で0(水平)へ近づけるための正規化
-function normalizeAngleToNearestFlat(angle) {
-  const twoPi = Math.PI * 2;
-  let a = angle % twoPi;
-  if (a > Math.PI) a -= twoPi;
-  if (a < -Math.PI) a += twoPi;
-  return a;
-}
-
-function snapLockedBodiesToGrid() {
-  if (lockedBodyList.length === 0) return;
-
-  // 1. 各ボディの「今いるセル」を計算
-  const desired = lockedBodyList.map(body => {
+  for (const body of lockedBodyList) {
     const { col, row } = currentCellOf(body);
-    return { body, col, row };
-  });
-
-  // 2. 同じセルを複数ボディが取り合っている場合、後から来た方を
-  //    上下左右の空いているセルへずらす(積み重なりを解消)。
-  const taken = new Map(); // "col,row" -> true
-  for (const d of desired) {
-    if (d.row < 0 || d.row >= ROWS || d.col < 0 || d.col >= COLS) continue;
-    const key = `${d.col},${d.row}`;
-    if (!taken.has(key)) {
-      taken.set(key, true);
-      continue;
-    }
-    // 空いている隣接セルを探す(上を優先: 積み上げっぽさを保つ)
-    const candidates = [
-      [d.col, d.row - 1], [d.col - 1, d.row], [d.col + 1, d.row],
-      [d.col, d.row + 1], [d.col - 1, d.row - 1], [d.col + 1, d.row - 1]
-    ];
-    for (const [nc, nr] of candidates) {
-      if (nc < 0 || nc >= COLS || nr < 0 || nr >= ROWS) continue;
-      const nk = `${nc},${nr}`;
-      if (!taken.has(nk)) {
-        taken.set(nk, true);
-        d.col = nc;
-        d.row = nr;
-        break;
-      }
+    if (row < 0 || row >= ROWS || col < 0 || col >= COLS) continue;
+    if (!newGrid[row][col]) {
+      newGrid[row][col] = { color: body.customColor || '#ffffff' };
     }
   }
 
-  // 3. 目標座標へ少しずつ補間して近づける(瞬間移動させない)
-  for (const d of desired) {
-    if (d.row < 0 || d.row >= ROWS) continue; // 画面外はスナップしない
-    const targetX = d.col * CELL + CELL / 2;
-    const targetY = d.row * CELL + CELL / 2;
-    const cur = d.body.position;
-    const newX = lerp(cur.x, targetX, SNAP_LERP);
-    const newY = lerp(cur.y, targetY, SNAP_LERP);
-    Body.setPosition(d.body, { x: newX, y: newY });
-
-    // 角度も少しずつ水平(0, 90, 180, 270度の最寄り)へ戻す
-    const angle = normalizeAngleToNearestFlat(d.body.angle);
-    const nearestFlat = Math.round(angle / (Math.PI / 2)) * (Math.PI / 2);
-    const newAngle = lerp(angle, nearestFlat, SNAP_ANGLE_LERP);
-    Body.setAngle(d.body, newAngle);
-
-    // 過剰な揺れ・回転を抑えて安定させる
-    Body.setVelocity(d.body, { x: d.body.velocity.x * 0.6, y: d.body.velocity.y * 0.6 });
-    Body.setAngularVelocity(d.body, d.body.angularVelocity * 0.5);
-  }
+  logic.grid = newGrid;
 }
 
 // 実座標ベースのライン消去判定。
@@ -850,8 +799,8 @@ function updateHUD() {
 let ambientCheckAccum = 0;
 const AMBIENT_CHECK_INTERVAL = 400; // ms
 
-// グリッドスナップ用のアキュムレータ(こちらは頻度を上げて頻繁に補正)
-let snapAccum = 0;
+// グリッド再計算用のアキュムレータ(見た目には手を加えず、裏側だけ更新)
+let gridRecomputeAccum = 0;
 
 function gameLoop(now) {
   const dt = Math.min(now - lastTime, 50);
@@ -862,11 +811,12 @@ function gameLoop(now) {
     syncGhostPosition(logic);
     Engine.update(engine, dt);
 
-    // 定期的にブロックをグリッドへスナップし直し、ズレの蓄積を防ぐ
-    snapAccum += dt;
-    if (snapAccum >= SNAP_INTERVAL) {
-      snapAccum = 0;
-      snapLockedBodiesToGrid();
+    // 定期的に、歪んだ物理配置をそのまま読み取って裏側のロジック
+    // グリッドを再計算する(ブロックの見た目・挙動には一切触れない)
+    gridRecomputeAccum += dt;
+    if (gridRecomputeAccum >= GRID_RECOMPUTE_INTERVAL) {
+      gridRecomputeAccum = 0;
+      recomputeLogicGridFromPhysics();
     }
 
     ambientCheckAccum += dt;
