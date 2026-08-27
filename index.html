@@ -375,8 +375,8 @@ class TetrisLogic {
     const points = [0, 100, 300, 500, 800];
     this.score += (points[sorted.length] || 800) * this.level;
     this.lines += sorted.length;
-    this.level = 1 + Math.floor(this.lines / 10);
-    this.dropInterval = Math.max(120, 800 - (this.level - 1) * 60);
+    this.level = 1 + Math.floor(this.lines / 1);
+    this.dropInterval = Math.max(1, 800 - (this.level - 1));
 
     // 衝突判定用グリッドからも該当行を削除して上から詰める。
     // (これがないと新しいピースの出現判定がズレていく)
@@ -427,6 +427,7 @@ function makeCellBody(px, py, color, options = {}) {
     frictionAir: 0.01,
     restitution: 0.05,
     chamfer: { radius: 3 },
+    mass: 0.3,
     render: { fillStyle: color }
   }, options));
   body.customColor = color;
@@ -555,15 +556,32 @@ function recomputeLogicGridFromPhysics() {
 // ある物理ボディが存在するかを調べる。崩れて別の行/列へ転がったブロックは
 // 元の格納位置に関係なく「今いる場所」で数えられるため、
 // 崩れの結果たまたま埋まった行も正しく消え、崩れて抜けた行は消えない。
+// ブロックが大きく傾いておらず、行の中心に綺麗に収まっているか判定
+function isBodyAligned(body, targetRow) {
+  // 1. 傾きチェック (直角・水平から約14度以上傾いている場合は除外)
+  const normAngle = Math.abs(body.angle) % (Math.PI / 2);
+  const angleDev = Math.min(normAngle, Math.PI / 2 - normAngle);
+  if (angleDev > 0.45) return false;
+
+  // 2. 高さ(Y座標)チェック (行の中心から上下にズレすぎている場合は除外)
+  const expectedY = targetRow * CELL + CELL / 2;
+  if (Math.abs(body.position.y - expectedY) > CELL * 0.85) return false;
+
+  return true;
+}
+
+// 実座標ベースのライン消去判定
 function checkAndClearLinesFromPhysics() {
-  // row -> Set(col) 現在そのセルにブロック中心があるか
   const occupancy = new Map(); // row -> Map(col -> body)
   for (const body of lockedBodyList) {
     const { col, row } = currentCellOf(body);
     if (row < 0 || row >= ROWS || col < 0 || col >= COLS) continue;
+
+    // 姿勢が崩れている・高さがズレているブロックは揃った判定から除外
+    if (!isBodyAligned(body, row)) continue;
+
     if (!occupancy.has(row)) occupancy.set(row, new Map());
     const rowMap = occupancy.get(row);
-    // 同じセルに複数ボディが重なっている場合は既存を優先(通常は起きない)
     if (!rowMap.has(col)) rowMap.set(col, body);
   }
 
@@ -575,7 +593,7 @@ function checkAndClearLinesFromPhysics() {
   }
   if (clearedRows.length === 0) return;
 
-  // 消去対象ボディを収集(その行に実際に存在するブロックのみ)
+  // 消去対象ボディを収集
   const bodiesToRemove = new Set();
   for (const row of clearedRows) {
     const rowMap = occupancy.get(row);
@@ -595,16 +613,10 @@ function checkAndClearLinesFromPhysics() {
     }, 180);
   }
 
-  // 残ったブロックには、崩れ促進のための軽い上向き解放感(実質は何もしない/
-  // 見た目は物理エンジンの自然落下に完全に任せる)。
   triggerShake(6);
   flashLines(clearedRows);
-
-  // ロジック側(衝突判定用グリッド)にも反映してスコア・レベルを更新。
   logic.requestLineClear(clearedRows);
 
-  // 消去後も、崩れの連鎖でさらに列が埋まる可能性があるため
-  // 少し時間を置いてもう一度判定する(将棋倒し的な連鎖消しに対応)。
   scheduleLineCheck(250);
 }
 
