@@ -1,0 +1,947 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>物理演算テトリス</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: radial-gradient(circle at 50% 0%, #1a1f35 0%, #0a0d1a 60%, #050508 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Segoe UI', 'Hiragino Sans', sans-serif;
+    color: #e8e8f0;
+  }
+  .wrap {
+    display: flex;
+    gap: 24px;
+    align-items: flex-start;
+  }
+  .board-frame {
+    position: relative;
+    border-radius: 12px;
+    padding: 10px;
+    background: linear-gradient(160deg, #232842, #14172a);
+    box-shadow:
+      0 0 0 1px rgba(255,255,255,0.05),
+      0 20px 60px rgba(0,0,0,0.6),
+      inset 0 1px 0 rgba(255,255,255,0.08);
+  }
+  canvas#gameCanvas {
+    display: block;
+    border-radius: 6px;
+    background: #08090f;
+  }
+  .side {
+    width: 220px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .panel {
+    background: linear-gradient(160deg, #232842, #14172a);
+    border-radius: 12px;
+    padding: 16px;
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.05), 0 10px 30px rgba(0,0,0,0.4);
+  }
+  .panel h2 {
+    margin: 0 0 10px;
+    font-size: 13px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #8b8fb8;
+  }
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 15px;
+    padding: 4px 0;
+  }
+  .stat-row span:last-child {
+    font-weight: 700;
+    color: #7ee7ff;
+    font-variant-numeric: tabular-nums;
+  }
+  #nextCanvas {
+    display: block;
+    margin: 0 auto;
+    background: #08090f;
+    border-radius: 6px;
+  }
+  .keys {
+    font-size: 12px;
+    line-height: 1.9;
+    color: #9ba0c4;
+  }
+  .keys b { color: #e8e8f0; }
+  .title {
+    font-size: 20px;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    margin-bottom: 4px;
+    background: linear-gradient(90deg, #7ee7ff, #b48bff);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .subtitle {
+    font-size: 11px;
+    color: #6b7099;
+    margin-bottom: 16px;
+  }
+  .overlay {
+    position: absolute;
+    inset: 10px;
+    background: rgba(5,6,12,0.85);
+    border-radius: 6px;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 12px;
+    backdrop-filter: blur(2px);
+  }
+  .overlay.show { display: flex; }
+  .overlay .big { font-size: 26px; font-weight: 800; color: #ff6b7e; }
+  .overlay button {
+    padding: 10px 22px;
+    border-radius: 8px;
+    border: none;
+    background: linear-gradient(135deg, #7ee7ff, #5b8dff);
+    color: #08090f;
+    font-weight: 700;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .overlay button:hover { filter: brightness(1.1); }
+  .line-flash {
+    position: absolute;
+    left: 10px;
+    right: 10px;
+    height: 30px;
+    background: rgba(255,255,255,0.9);
+    pointer-events: none;
+    opacity: 0;
+    border-radius: 3px;
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <div class="side">
+    <div class="panel">
+      <div class="title">PHYSICS TETRIS</div>
+      <div class="subtitle">見た目は物理演算 / 判定はロジック演算</div>
+      <div class="stat-row"><span>SCORE</span><span id="scoreVal">0</span></div>
+      <div class="stat-row"><span>LINES</span><span id="linesVal">0</span></div>
+      <div class="stat-row"><span>LEVEL</span><span id="levelVal">1</span></div>
+    </div>
+    <div class="panel">
+      <h2>Next</h2>
+      <canvas id="nextCanvas" width="140" height="100"></canvas>
+    </div>
+    <div class="panel keys">
+      <h2>Controls</h2>
+      <div><b>←→</b> 移動</div>
+      <div><b>↑</b> 回転</div>
+      <div><b>↓</b> ソフトドロップ</div>
+      <div><b>Space</b> ハードドロップ</div>
+      <div><b>P</b> ポーズ</div>
+    </div>
+  </div>
+
+  <div class="board-frame">
+    <canvas id="gameCanvas" width="300" height="600"></canvas>
+    <div class="overlay" id="overlay">
+      <div class="big" id="overlayText">GAME OVER</div>
+      <button id="restartBtn">もう一度プレイ</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+<script>
+/* =========================================================================
+   物理演算テトリス
+   -------------------------------------------------------------------------
+   設計思想:
+   - 「本当のテトリス」は見えないロジックグリッド(COLS x ROWS)上で完結して計算する。
+     落下タイミング、衝突(着地)判定、ライン消去判定はすべてこのグリッドが正とする。
+   - 画面に見えているのは Matter.js の物理ボディ(1セル=1個のRigid Box)。
+     ロジックグリッドが「このセルは埋まっている」と言えば、対応する位置に
+     物理ボディを生成する。落下中のピースは物理シミュレーションではなく
+     ロジック側の座標にボディを追従させる(物理エンジンに任せると重力で
+     暴れてテトリスとして成立しなくなるため)。
+   - ピースが「着地」してロジック側に固定された瞬間、そのブロック群の
+     物理ボディを static(固定) → dynamic(可動)へ切り替え、わずかな
+     初速・回転を与える。これにより積み上がったブロックがリアルに
+     ゴトッと沈み込んだり、隣と干渉して微妙に傾いたりする「らしさ」が出る。
+   - ライン消去が確定したら、該当ロジック行に属するセルのボディを
+     ワールドから除去し、爆散っぽい軽い衝撃(上のブロックに小さな力積)
+     を加えてから、上のロジック行を1段ずつ繰り下げる。
+     見た目のブロックはその後の物理シミュレーションで自然に落ちてくる
+     ため、「消えた後にストンと詰まる」リアルな演出になる。
+   ========================================================================= */
+
+const COLS = 10;
+const ROWS = 20;
+const CELL = 30; // px per grid cell
+const BOARD_W = COLS * CELL; // 300
+const BOARD_H = ROWS * CELL; // 600
+
+// ---- テトリミノ定義 (SRS風の4x4回転テーブルは簡略化し、4方向分の座標を直書き) ----
+const COLORS = {
+  I: '#5ce1ff',
+  O: '#ffe45c',
+  T: '#c77dff',
+  S: '#5cff8f',
+  Z: '#ff5c6a',
+  J: '#5c8bff',
+  L: '#ffa85c'
+};
+
+// 各ピース: 4種の回転状態 x 4セル(x,y) 0-3グリッド内
+const SHAPES = {
+  I: [
+    [[0,1],[1,1],[2,1],[3,1]],
+    [[2,0],[2,1],[2,2],[2,3]],
+    [[0,2],[1,2],[2,2],[3,2]],
+    [[1,0],[1,1],[1,2],[1,3]]
+  ],
+  O: [
+    [[1,0],[2,0],[1,1],[2,1]],
+    [[1,0],[2,0],[1,1],[2,1]],
+    [[1,0],[2,0],[1,1],[2,1]],
+    [[1,0],[2,0],[1,1],[2,1]]
+  ],
+  T: [
+    [[1,0],[0,1],[1,1],[2,1]],
+    [[1,0],[1,1],[2,1],[1,2]],
+    [[0,1],[1,1],[2,1],[1,2]],
+    [[1,0],[0,1],[1,1],[1,2]]
+  ],
+  S: [
+    [[1,0],[2,0],[0,1],[1,1]],
+    [[1,0],[1,1],[2,1],[2,2]],
+    [[1,1],[2,1],[0,2],[1,2]],
+    [[0,0],[0,1],[1,1],[1,2]]
+  ],
+  Z: [
+    [[0,0],[1,0],[1,1],[2,1]],
+    [[2,0],[1,1],[2,1],[1,2]],
+    [[0,1],[1,1],[1,2],[2,2]],
+    [[1,0],[0,1],[1,1],[0,2]]
+  ],
+  J: [
+    [[0,0],[0,1],[1,1],[2,1]],
+    [[1,0],[2,0],[1,1],[1,2]],
+    [[0,1],[1,1],[2,1],[2,2]],
+    [[1,0],[1,1],[0,2],[1,2]]
+  ],
+  L: [
+    [[2,0],[0,1],[1,1],[2,1]],
+    [[1,0],[1,1],[1,2],[2,2]],
+    [[0,1],[1,1],[2,1],[0,2]],
+    [[0,0],[1,0],[1,1],[1,2]]
+  ]
+};
+const PIECE_KEYS = Object.keys(SHAPES);
+
+function randomPieceKey() {
+  return PIECE_KEYS[Math.floor(Math.random() * PIECE_KEYS.length)];
+}
+
+// =========================================================================
+// ロジック側テトリス (裏で回る「本物」のテトリス)
+// =========================================================================
+class TetrisLogic {
+  constructor() {
+    this.grid = this.emptyGrid(); // grid[row][col] = null | {color, bodyId}
+    this.current = null;          // {key, rot, x, y}
+    this.next = randomPieceKey();
+    this.score = 0;
+    this.lines = 0;
+    this.level = 1;
+    this.gameOver = false;
+    this.dropInterval = 800; // ms
+    this.dropTimer = 0;
+    this.spawn();
+  }
+
+  emptyGrid() {
+    return Array.from({ length: ROWS }, () => Array(COLS).fill(null));
+  }
+
+  spawn() {
+    const key = this.next;
+    this.next = randomPieceKey();
+    this.current = { key, rot: 0, x: 3, y: -1 };
+    if (this.collides(this.current, 0, 0)) {
+      this.gameOver = true;
+    }
+  }
+
+  cellsOf(piece, dx = 0, dy = 0, rotOverride = null) {
+    const rot = rotOverride === null ? piece.rot : rotOverride;
+    return SHAPES[piece.key][rot].map(([cx, cy]) => [piece.x + cx + dx, piece.y + cy + dy]);
+  }
+
+  collides(piece, dx, dy, rotOverride = null) {
+    const cells = this.cellsOf(piece, dx, dy, rotOverride);
+    for (const [x, y] of cells) {
+      if (x < 0 || x >= COLS || y >= ROWS) return true;
+      if (y < 0) continue; // まだ盤面上部の外側はOK
+      if (this.grid[y][x]) return true;
+    }
+    return false;
+  }
+
+  move(dx) {
+    if (!this.current || this.gameOver) return false;
+    if (!this.collides(this.current, dx, 0)) {
+      this.current.x += dx;
+      return true;
+    }
+    return false;
+  }
+
+  rotate() {
+    if (!this.current || this.gameOver) return false;
+    const newRot = (this.current.rot + 1) % 4;
+    // シンプルなウォールキック試行 (0, -1, +1, -2, +2)
+    const kicks = [0, -1, 1, -2, 2];
+    for (const k of kicks) {
+      if (!this.collides(this.current, k, 0, newRot)) {
+        this.current.x += k;
+        this.current.rot = newRot;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  softDrop() {
+    if (!this.current || this.gameOver) return false;
+    if (!this.collides(this.current, 0, 1)) {
+      this.current.y += 1;
+      this.score += 1;
+      return true;
+    } else {
+      this.lockPiece();
+      return false;
+    }
+  }
+
+  hardDrop() {
+    if (!this.current || this.gameOver) return;
+    let dist = 0;
+    while (!this.collides(this.current, 0, 1)) {
+      this.current.y += 1;
+      dist++;
+    }
+    this.score += dist * 2;
+    this.lockPiece();
+  }
+
+  // ピースを盤面に固定。固定されたセル座標と色をコールバックで返す。
+  // 注意: ここでの this.grid はあくまで「新ピースの衝突判定・出現可否」を
+  // 判断するための簡略モデル。実際にどの行が消えるかは、Matter.js側が
+  // 物理ボディの実座標から判定して requestLineClear() を呼ぶことで決まる。
+  lockPiece() {
+    const key = this.current.key;
+    const color = COLORS[key];
+    const cells = this.cellsOf(this.current);
+    const lockedCells = [];
+    for (const [x, y] of cells) {
+      if (y < 0) continue; // 画面外で固定 = ゲームオーバー相当だが安全策
+      this.grid[y][x] = { color };
+      lockedCells.push({ x, y, color });
+    }
+    if (this.onLock) this.onLock(lockedCells);
+    this.spawn();
+  }
+
+  // 物理側(Matter.js)が「実座標ベースで揃っていると判定した行」を通知してくる。
+  // ロジック側はこれを信頼し、スコア加算とレベル更新、および
+  // 衝突判定用グリッドからの行削除(上から詰める)を行う。
+  requestLineClear(clearedRows) {
+    if (!clearedRows || clearedRows.length === 0) return;
+    const sorted = [...new Set(clearedRows)].sort((a, b) => a - b);
+
+    const points = [0, 100, 300, 500, 800];
+    this.score += (points[sorted.length] || 800) * this.level;
+    this.lines += sorted.length;
+    this.level = 1 + Math.floor(this.lines / 10);
+    this.dropInterval = Math.max(120, 800 - (this.level - 1) * 60);
+
+    // 衝突判定用グリッドからも該当行を削除して上から詰める。
+    // (これがないと新しいピースの出現判定がズレていく)
+    for (const row of sorted) {
+      this.grid.splice(row, 1);
+      this.grid.unshift(Array(COLS).fill(null));
+    }
+    return sorted;
+  }
+
+  tick(dtMs) {
+    if (this.gameOver) return;
+    this.dropTimer += dtMs;
+    if (this.dropTimer >= this.dropInterval) {
+      this.dropTimer = 0;
+      this.softDrop();
+    }
+  }
+}
+
+// =========================================================================
+// 物理側 (Matter.js) — 見た目を担当
+// =========================================================================
+const { Engine, World, Bodies, Body, Composite, Events } = Matter;
+
+const engine = Engine.create();
+engine.gravity.y = 1.0;
+const world = engine.world;
+
+// 盤面の壁 (床・左右) を物理ボディとして配置。見た目には出さない。
+const wallThickness = 40;
+const walls = [
+  Bodies.rectangle(BOARD_W / 2, BOARD_H + wallThickness / 2, BOARD_W + wallThickness * 2, wallThickness, { isStatic: true, friction: 0.6 }),
+  Bodies.rectangle(-wallThickness / 2, BOARD_H / 2, wallThickness, BOARD_H * 2, { isStatic: true, friction: 0.6 }),
+  Bodies.rectangle(BOARD_W + wallThickness / 2, BOARD_H / 2, wallThickness, BOARD_H * 2, { isStatic: true, friction: 0.6 })
+];
+World.add(world, walls);
+
+// 固定済みブロックの物理ボディ配列は下部の lockedBodyList で管理する
+// (Matter.jsの実座標からライン判定を行うため、x,y固定キーのMapは使わない)
+// 現在操作中ピースの「見た目専用」ボディ (物理演算せず座標を直接セット)
+let ghostBodies = []; // {body, gx, gy} ロジック座標に追従させる表示専用矩形
+
+function makeCellBody(px, py, color, options = {}) {
+  const pad = 1.5;
+  const body = Bodies.rectangle(px, py, CELL - pad * 2, CELL - pad * 2, Object.assign({
+    friction: 0.5,
+    frictionAir: 0.01,
+    restitution: 0.05,
+    chamfer: { radius: 3 },
+    render: { fillStyle: color }
+  }, options));
+  body.customColor = color;
+  return body;
+}
+
+// 落下中ピース用の「表示専用」ボディを作り直す
+function rebuildGhost(logic) {
+  // 既存を削除
+  ghostBodies.forEach(g => World.remove(world, g.body));
+  ghostBodies = [];
+  if (!logic.current) return;
+  const cells = logic.cellsOf(logic.current);
+  const color = COLORS[logic.current.key];
+  for (const [gx, gy] of cells) {
+    const px = gx * CELL + CELL / 2;
+    const py = gy * CELL + CELL / 2;
+    const body = makeCellBody(px, py, color, { isStatic: true, isSensor: false });
+    World.add(world, body);
+    ghostBodies.push({ body, gx, gy });
+  }
+}
+
+// 落下中ピースの表示位置をロジック座標に同期(物理演算はさせず直接テレポート)
+function syncGhostPosition(logic) {
+  if (!logic.current || ghostBodies.length === 0) return;
+  const cells = logic.cellsOf(logic.current);
+  cells.forEach(([gx, gy], i) => {
+    const g = ghostBodies[i];
+    if (!g) return;
+    const px = gx * CELL + CELL / 2;
+    const py = gy * CELL + CELL / 2;
+    Body.setPosition(g.body, { x: px, y: py });
+    Body.setVelocity(g.body, { x: 0, y: 0 });
+    Body.setAngularVelocity(g.body, 0);
+  });
+}
+
+// ---------------------------------------------------------------------
+// 固定済みブロックの管理方式:
+// 崩れた後もライン消去をMatter.jsの「実座標」から判定するため、
+// lockedBodies は x,y キー固定のMapではなく単純な配列で保持する。
+// 各要素は body そのもの。「今どのセル(行・列)にいるか」は毎回
+// body.position / body.angle から動的に計算する。
+// ---------------------------------------------------------------------
+let lockedBodyList = []; // Array<Matter.Body>
+
+// ボディの実座標から現在の論理セル(col,row)を推定する。
+// 少し回転していても中心座標は変わらないので、中心が属するセルをそのまま使う。
+function currentCellOf(body) {
+  const col = Math.floor(body.position.x / CELL);
+  const row = Math.floor(body.position.y / CELL);
+  return { col, row };
+}
+
+// ピース固定時: ghost を消し、本物の(可動になりうる)物理ボディへ差し替える
+function onPieceLocked(cells) {
+  ghostBodies.forEach(g => World.remove(world, g.body));
+  ghostBodies = [];
+
+  for (const { x, y, color } of cells) {
+    const px = x * CELL + CELL / 2;
+    const py = y * CELL + CELL / 2;
+    const body = makeCellBody(px, py, color, {
+      isStatic: false,
+      friction: 0.7,
+      frictionStatic: 1.2
+    });
+    // 固定直後は静かに"着地"させる(わずかな衝撃のみ)
+    Body.setVelocity(body, { x: (Math.random() - 0.5) * 0.3, y: 0.5 });
+    World.add(world, body);
+    lockedBodyList.push(body);
+  }
+  // 着地音的な軽いカメラシェイク演出用フラグ
+  triggerShake(2);
+
+  // 固定した直後にライン判定を行う(この時点ではまだ崩れていないので
+  // 通常のテトリスと同じタイミングで消える)。ただし判定自体は
+  // 「今の実座標」で行毎に埋まっているかを見る、崩れ対応版のロジック。
+  scheduleLineCheck();
+}
+
+// 物理エンジンが少し安定してから(直後だと着地の跳ねで誤判定しうるため)
+// 実座標ベースのライン判定を実行する。
+let lineCheckTimer = null;
+function scheduleLineCheck(delayMs = 60) {
+  if (lineCheckTimer) clearTimeout(lineCheckTimer);
+  lineCheckTimer = setTimeout(() => {
+    lineCheckTimer = null;
+    checkAndClearLinesFromPhysics();
+  }, delayMs);
+}
+
+// ---------------------------------------------------------------------
+// 定期グリッドスナップ:
+// 物理演算に完全に任せていると、時間経過とともにブロックが少しずつ
+// 傾いたり隙間ができたりして「テトリスの盤面」としての整合性が崩れていく。
+// そこで一定間隔ごとに、各固定ブロックの「今いるセル」を再計算し、
+// そのセルの中心座標・角度0へ少しずつ(瞬間移動ではなく補間で)引き戻す。
+// 物理的なガタつき・傾きの"らしさ"は残しつつ、崩壊が蓄積しないようにする。
+// ---------------------------------------------------------------------
+const SNAP_INTERVAL = 220;      // ms: どのくらいの頻度でスナップ補正をかけるか
+const SNAP_LERP = 0.18;         // 1回の補正でどれだけ目標へ近づけるか(0-1)
+const SNAP_ANGLE_LERP = 0.25;   // 角度も同様に少しずつ水平へ戻す
+
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+// 角度を最短経路で0(水平)へ近づけるための正規化
+function normalizeAngleToNearestFlat(angle) {
+  const twoPi = Math.PI * 2;
+  let a = angle % twoPi;
+  if (a > Math.PI) a -= twoPi;
+  if (a < -Math.PI) a += twoPi;
+  return a;
+}
+
+function snapLockedBodiesToGrid() {
+  if (lockedBodyList.length === 0) return;
+
+  // 1. 各ボディの「今いるセル」を計算
+  const desired = lockedBodyList.map(body => {
+    const { col, row } = currentCellOf(body);
+    return { body, col, row };
+  });
+
+  // 2. 同じセルを複数ボディが取り合っている場合、後から来た方を
+  //    上下左右の空いているセルへずらす(積み重なりを解消)。
+  const taken = new Map(); // "col,row" -> true
+  for (const d of desired) {
+    if (d.row < 0 || d.row >= ROWS || d.col < 0 || d.col >= COLS) continue;
+    const key = `${d.col},${d.row}`;
+    if (!taken.has(key)) {
+      taken.set(key, true);
+      continue;
+    }
+    // 空いている隣接セルを探す(上を優先: 積み上げっぽさを保つ)
+    const candidates = [
+      [d.col, d.row - 1], [d.col - 1, d.row], [d.col + 1, d.row],
+      [d.col, d.row + 1], [d.col - 1, d.row - 1], [d.col + 1, d.row - 1]
+    ];
+    for (const [nc, nr] of candidates) {
+      if (nc < 0 || nc >= COLS || nr < 0 || nr >= ROWS) continue;
+      const nk = `${nc},${nr}`;
+      if (!taken.has(nk)) {
+        taken.set(nk, true);
+        d.col = nc;
+        d.row = nr;
+        break;
+      }
+    }
+  }
+
+  // 3. 目標座標へ少しずつ補間して近づける(瞬間移動させない)
+  for (const d of desired) {
+    if (d.row < 0 || d.row >= ROWS) continue; // 画面外はスナップしない
+    const targetX = d.col * CELL + CELL / 2;
+    const targetY = d.row * CELL + CELL / 2;
+    const cur = d.body.position;
+    const newX = lerp(cur.x, targetX, SNAP_LERP);
+    const newY = lerp(cur.y, targetY, SNAP_LERP);
+    Body.setPosition(d.body, { x: newX, y: newY });
+
+    // 角度も少しずつ水平(0, 90, 180, 270度の最寄り)へ戻す
+    const angle = normalizeAngleToNearestFlat(d.body.angle);
+    const nearestFlat = Math.round(angle / (Math.PI / 2)) * (Math.PI / 2);
+    const newAngle = lerp(angle, nearestFlat, SNAP_ANGLE_LERP);
+    Body.setAngle(d.body, newAngle);
+
+    // 過剰な揺れ・回転を抑えて安定させる
+    Body.setVelocity(d.body, { x: d.body.velocity.x * 0.6, y: d.body.velocity.y * 0.6 });
+    Body.setAngularVelocity(d.body, d.body.angularVelocity * 0.5);
+  }
+}
+
+// 実座標ベースのライン消去判定。
+// 各行について、その行のセル(0..COLS-1)すべてに、中心がその行かつその列に
+// ある物理ボディが存在するかを調べる。崩れて別の行/列へ転がったブロックは
+// 元の格納位置に関係なく「今いる場所」で数えられるため、
+// 崩れの結果たまたま埋まった行も正しく消え、崩れて抜けた行は消えない。
+function checkAndClearLinesFromPhysics() {
+  // row -> Set(col) 現在そのセルにブロック中心があるか
+  const occupancy = new Map(); // row -> Map(col -> body)
+  for (const body of lockedBodyList) {
+    const { col, row } = currentCellOf(body);
+    if (row < 0 || row >= ROWS || col < 0 || col >= COLS) continue;
+    if (!occupancy.has(row)) occupancy.set(row, new Map());
+    const rowMap = occupancy.get(row);
+    // 同じセルに複数ボディが重なっている場合は既存を優先(通常は起きない)
+    if (!rowMap.has(col)) rowMap.set(col, body);
+  }
+
+  const clearedRows = [];
+  for (const [row, rowMap] of occupancy.entries()) {
+    if (rowMap.size >= COLS) {
+      clearedRows.push(row);
+    }
+  }
+  if (clearedRows.length === 0) return;
+
+  // 消去対象ボディを収集(その行に実際に存在するブロックのみ)
+  const bodiesToRemove = new Set();
+  for (const row of clearedRows) {
+    const rowMap = occupancy.get(row);
+    for (const body of rowMap.values()) bodiesToRemove.add(body);
+  }
+
+  // 弾け飛ばし演出をしてから除去
+  for (const body of bodiesToRemove) {
+    Body.setVelocity(body, {
+      x: (Math.random() - 0.5) * 8,
+      y: -4 - Math.random() * 3
+    });
+    Body.setAngularVelocity(body, (Math.random() - 0.5) * 0.6);
+    setTimeout(() => {
+      World.remove(world, body);
+      lockedBodyList = lockedBodyList.filter(b => b !== body);
+    }, 180);
+  }
+
+  // 残ったブロックには、崩れ促進のための軽い上向き解放感(実質は何もしない/
+  // 見た目は物理エンジンの自然落下に完全に任せる)。
+  triggerShake(6);
+  flashLines(clearedRows);
+
+  // ロジック側(衝突判定用グリッド)にも反映してスコア・レベルを更新。
+  logic.requestLineClear(clearedRows);
+
+  // 消去後も、崩れの連鎖でさらに列が埋まる可能性があるため
+  // 少し時間を置いてもう一度判定する(将棋倒し的な連鎖消しに対応)。
+  scheduleLineCheck(250);
+}
+
+// ゲームオーバー等でリセット
+function resetPhysics() {
+  for (const body of lockedBodyList) World.remove(world, body);
+  lockedBodyList = [];
+  ghostBodies.forEach(g => World.remove(world, g.body));
+  ghostBodies = [];
+  if (lineCheckTimer) { clearTimeout(lineCheckTimer); lineCheckTimer = null; }
+}
+
+// =========================================================================
+// 演出系 (カメラシェイク・ライン消去フラッシュ)
+// =========================================================================
+let shakeAmount = 0;
+function triggerShake(amount) { shakeAmount = Math.max(shakeAmount, amount); }
+
+let flashRows = []; // {row, alpha}
+function flashLines(rows) {
+  rows.forEach(row => flashRows.push({ row, alpha: 1 }));
+}
+
+// =========================================================================
+// 描画 + メインループ
+// =========================================================================
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const nextCanvas = document.getElementById('nextCanvas');
+const nextCtx = nextCanvas.getContext('2d');
+const overlay = document.getElementById('overlay');
+const overlayText = document.getElementById('overlayText');
+const restartBtn = document.getElementById('restartBtn');
+const scoreVal = document.getElementById('scoreVal');
+const linesVal = document.getElementById('linesVal');
+const levelVal = document.getElementById('levelVal');
+
+let logic = new TetrisLogic();
+logic.onLock = onPieceLocked;
+// ライン消去は物理側(checkAndClearLinesFromPhysics)が実座標を見て
+// 自発的に判定し logic.requestLineClear() を呼ぶため、
+// logic.onLinesCleared のようなロジック起点のコールバックは使わない。
+rebuildGhost(logic);
+
+let paused = false;
+let lastTime = performance.now();
+
+function drawRoundedRect(c, x, y, w, h, r) {
+  c.beginPath();
+  c.moveTo(x + r, y);
+  c.arcTo(x + w, y, x + w, y + h, r);
+  c.arcTo(x + w, y + h, x, y + h, r);
+  c.arcTo(x, y + h, x, y, r);
+  c.arcTo(x, y, x + w, y, r);
+  c.closePath();
+}
+
+function drawBoardBackground() {
+  ctx.fillStyle = '#08090f';
+  ctx.fillRect(0, 0, BOARD_W, BOARD_H);
+  // グリッド線(薄く)
+  ctx.strokeStyle = 'rgba(255,255,255,0.035)';
+  ctx.lineWidth = 1;
+  for (let x = 0; x <= COLS; x++) {
+    ctx.beginPath();
+    ctx.moveTo(x * CELL, 0);
+    ctx.lineTo(x * CELL, BOARD_H);
+    ctx.stroke();
+  }
+  for (let y = 0; y <= ROWS; y++) {
+    ctx.beginPath();
+    ctx.moveTo(0, y * CELL);
+    ctx.lineTo(BOARD_W, y * CELL);
+    ctx.stroke();
+  }
+}
+
+function drawBody(body) {
+  const { x, y } = body.position;
+  const angle = body.angle;
+  const color = body.customColor || '#ffffff';
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  const size = CELL - 3;
+  ctx.fillStyle = color;
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 6;
+  drawRoundedRect(ctx, -size / 2, -size / 2, size, size, 4);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+  ctx.lineWidth = 1.5;
+  drawRoundedRect(ctx, -size / 2, -size / 2, size, size, 4);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawGhostPiece() {
+  // ロジック側のハードドロップ着地位置を薄く表示
+  if (!logic.current) return;
+  const test = { ...logic.current };
+  let dy = 0;
+  while (!logic.collides(test, 0, dy + 1)) dy++;
+  const cells = logic.cellsOf(logic.current, 0, dy);
+  ctx.save();
+  ctx.globalAlpha = 0.15;
+  ctx.fillStyle = COLORS[logic.current.key];
+  for (const [gx, gy] of cells) {
+    if (gy < 0) continue;
+    drawRoundedRect(ctx, gx * CELL + 2, gy * CELL + 2, CELL - 4, CELL - 4, 3);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawNext() {
+  nextCtx.clearRect(0, 0, nextCanvas.width, nextCanvas.height);
+  nextCtx.fillStyle = '#08090f';
+  nextCtx.fillRect(0, 0, nextCanvas.width, nextCanvas.height);
+  const key = logic.next;
+  const shape = SHAPES[key][0];
+  const color = COLORS[key];
+  const cell = 22;
+  // バウンディングを計算して中央寄せ
+  const xs = shape.map(c => c[0]);
+  const ys = shape.map(c => c[1]);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const w = (maxX - minX + 1) * cell;
+  const h = (maxY - minY + 1) * cell;
+  const offX = (nextCanvas.width - w) / 2;
+  const offY = (nextCanvas.height - h) / 2;
+  nextCtx.fillStyle = color;
+  nextCtx.shadowColor = color;
+  nextCtx.shadowBlur = 8;
+  for (const [cx, cy] of shape) {
+    const px = offX + (cx - minX) * cell;
+    const py = offY + (cy - minY) * cell;
+    nextCtx.beginPath();
+    nextCtx.roundRect ? nextCtx.roundRect(px + 1, py + 1, cell - 2, cell - 2, 3) : nextCtx.rect(px + 1, py + 1, cell - 2, cell - 2);
+    nextCtx.fill();
+  }
+  nextCtx.shadowBlur = 0;
+}
+
+function render() {
+  ctx.save();
+
+  // カメラシェイク
+  if (shakeAmount > 0.05) {
+    const dx = (Math.random() - 0.5) * shakeAmount;
+    const dy = (Math.random() - 0.5) * shakeAmount;
+    ctx.translate(dx, dy);
+    shakeAmount *= 0.85;
+  } else {
+    shakeAmount = 0;
+  }
+
+  drawBoardBackground();
+  drawGhostPiece();
+
+  // 固定済み物理ブロック
+  for (const body of lockedBodyList) drawBody(body);
+  // 落下中ピース(表示専用)
+  for (const g of ghostBodies) drawBody(g.body);
+
+  // ライン消去フラッシュ
+  for (let i = flashRows.length - 1; i >= 0; i--) {
+    const f = flashRows[i];
+    ctx.save();
+    ctx.globalAlpha = f.alpha;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, f.row * CELL, BOARD_W, CELL);
+    ctx.restore();
+    f.alpha -= 0.06;
+    if (f.alpha <= 0) flashRows.splice(i, 1);
+  }
+
+  ctx.restore();
+}
+
+function updateHUD() {
+  scoreVal.textContent = logic.score;
+  linesVal.textContent = logic.lines;
+  levelVal.textContent = logic.level;
+}
+
+// ピース固定時だけでなく、常時じわじわ崩れていく積み上げブロックにも
+// 対応するため、一定間隔でも実座標ベースのライン判定を回す。
+// (例: 何ピースも後になってから隣のタワーが倒れてきて偶然行が揃う、等)
+let ambientCheckAccum = 0;
+const AMBIENT_CHECK_INTERVAL = 400; // ms
+
+// グリッドスナップ用のアキュムレータ(こちらは頻度を上げて頻繁に補正)
+let snapAccum = 0;
+
+function gameLoop(now) {
+  const dt = Math.min(now - lastTime, 50);
+  lastTime = now;
+
+  if (!paused && !logic.gameOver) {
+    logic.tick(dt);
+    syncGhostPosition(logic);
+    Engine.update(engine, dt);
+
+    // 定期的にブロックをグリッドへスナップし直し、ズレの蓄積を防ぐ
+    snapAccum += dt;
+    if (snapAccum >= SNAP_INTERVAL) {
+      snapAccum = 0;
+      snapLockedBodiesToGrid();
+    }
+
+    ambientCheckAccum += dt;
+    if (ambientCheckAccum >= AMBIENT_CHECK_INTERVAL) {
+      ambientCheckAccum = 0;
+      checkAndClearLinesFromPhysics();
+    }
+  }
+
+  render();
+  drawNext();
+  updateHUD();
+
+  if (logic.gameOver && !overlay.classList.contains('show')) {
+    overlayText.textContent = 'GAME OVER';
+    overlay.classList.add('show');
+  }
+
+  requestAnimationFrame(gameLoop);
+}
+
+// =========================================================================
+// 入力
+// =========================================================================
+window.addEventListener('keydown', (e) => {
+  if (logic.gameOver) return;
+  switch (e.code) {
+    case 'ArrowLeft':
+      logic.move(-1);
+      syncGhostPosition(logic);
+      e.preventDefault();
+      break;
+    case 'ArrowRight':
+      logic.move(1);
+      syncGhostPosition(logic);
+      e.preventDefault();
+      break;
+    case 'ArrowUp':
+      logic.rotate();
+      syncGhostPosition(logic);
+      e.preventDefault();
+      break;
+    case 'ArrowDown':
+      logic.softDrop();
+      syncGhostPosition(logic);
+      e.preventDefault();
+      break;
+    case 'Space':
+      logic.hardDrop();
+      rebuildGhost(logic);
+      e.preventDefault();
+      break;
+    case 'KeyP':
+      paused = !paused;
+      break;
+  }
+});
+
+// spawn() 直後は ghost を作り直す必要があるため、フックする
+const originalSpawn = TetrisLogic.prototype.spawn;
+TetrisLogic.prototype.spawn = function () {
+  originalSpawn.call(this);
+  rebuildGhost(this);
+};
+
+restartBtn.addEventListener('click', () => {
+  resetPhysics();
+  logic = new TetrisLogic();
+  logic.onLock = onPieceLocked;
+  rebuildGhost(logic);
+  overlay.classList.remove('show');
+  paused = false;
+});
+
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>
